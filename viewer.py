@@ -17,6 +17,7 @@ import random
 import sh
 import string
 import zmq
+import urllib2
 
 from settings import settings, LISTEN, PORT
 import html_templates
@@ -41,6 +42,7 @@ SCREENLY_HTML = '/tmp/screenly_html/'
 LOAD_SCREEN = '/screenly/loading.png'  # relative to $HOME
 UZBLRC = '/.config/uzbl/config-screenly'  # relative to $HOME
 INTRO = '/screenly/intro-template.html'
+CACHE_LOCATION = '/tmp/'
 
 current_browser_url = None
 browser = None
@@ -373,11 +375,44 @@ def load_settings():
     logging.getLogger().setLevel(logging.DEBUG if settings['debug_logging'] else logging.INFO)
 
 
+class CacheUpdater(Thread):
+    """ Downloads and store local cache copy in /tmp """
+    def __init__(self, uri):
+        Thread.__init__(self)
+        self.uri = uri
+
+    def run(self):
+        self.local_uri = CACHE_LOCATION + self.uri.replace("/","_").replace(":","_")
+        response = urllib2.urlopen(self.uri)
+        webContent = response.read()
+        f = open(self.local_uri, 'w')
+        f.write(webContent)
+        f.close
+        logging.info('URI ' + self.uri + " is cached in " + self.local_uri)
+
+
+def cache_update(uri):
+    """
+    if local uri exists, return it
+    if uri does not exist, return uri
+    launch a thread to download and update uri
+    """
+    local_uri = CACHE_LOCATION + uri.replace("/","_").replace(":","_")
+    # thread to dowload and cache the file
+    cache_updater = CacheUpdater(uri)
+    cache_updater.start()
+    if path.isfile(local_uri):
+        return 'file://' + local_uri
+    else:
+        return uri
+
 def asset_loop(scheduler):
     disable_update_check = getenv("DISABLE_UPDATE_CHECK", False)
     if not disable_update_check:
         check_update()
     asset = scheduler.get_next_asset()
+
+    disable_web_caching = getenv("DISABLE_WEB_CACHING", False)
 
     if asset is None:
         logging.info('Playlist is empty. Sleeping for %s seconds', EMPTY_PL_DELAY)
@@ -395,6 +430,8 @@ def asset_loop(scheduler):
         elif 'web' in mime:
             # FIXME If we want to force periodic reloads of repeated web assets, force=True could be used here.
             # See e38e6fef3a70906e7f8739294ffd523af6ce66be.
+            if not disable_web_caching:
+                uri = cache_update(uri)
             browser_url(uri)
         elif 'video' or 'streaming' in mime:
             view_video(uri, asset['duration'])
